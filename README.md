@@ -1,16 +1,13 @@
 # Breeze
 
-Breeze is a set of tools that aims to make lisp development a breeze
-(hence the name).
+Breeze is a set of tools that aims to make lisp development easier.
 
-It is very much alpha quality, I'm experimenting with a lot of things
-in parallel.
+It is not production-ready.
 
-More information in the [documentation](https://fstamour.gitlab.io/breeze/).
+Please read the [documentation](https://fstamour.gitlab.io/breeze/).
 
-## Support me
+## Upstream
 
-I'm doing this for fun, but if you find this useful or just want to
-cheer me up :) here's a link for that:
-
-<a href="https://ko-fi.com/F2F21YR7I">Support me on Ko-Fi</a>
+The original project was not proprietary, nor is that the intent of
+this nor any downstream fork; if you wish to incentivise development,
+please keep the tool's users invested in its applicability.
