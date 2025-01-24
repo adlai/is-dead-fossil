@@ -4,9 +4,11 @@
 (defpackage #:breeze.test.lossless-reader
   (:documentation "Test package for #:breeze.lossless-reader")
   (:use #:cl #:breeze.lossless-reader)
+  ;; Importing non-exported symbols
   (:import-from #:breeze.lossless-reader
                 #:*state-control-string*
                 #:state-context
+                #:%nodes
                 #:read-sharpsign-backslash
                 #:read-sharpsign-quote
                 #:read-sharpsign-left-parens
@@ -146,4 +148,27 @@
 
 #++
 (∀ (128 x y z)
-   (map 'string 'code-char (list x y z)))
+  (map 'string 'code-char (list x y z)))
+
+
+
+; file: /home/fstamour/dev/breeze/tests/lossless-reader.randomized.lisp
+; in:
+;      PARACHUTE:DEFINE-TEST+RUN BREEZE.TEST.LOSSLESS-READER::PARSE-RANDOMIZED
+;     (REMHASH STRING BREEZE.TEST.LOSSLESS-READER::*TEST-STRINGS*)
+;
+; caught WARNING:
+;   undefined variable: COMMON-LISP:STRING
+
+;     (FORMAT STREAM "Remove ~s from *test-strings* and continue to the next test."
+;             STRING)
+;
+; caught WARNING:
+;   undefined variable: COMMON-LISP:STRING
+;
+; compilation unit finished
+;   Undefined variable:
+;     STRING
+;   caught 2 WARNING conditions
+;   caught 16 STYLE-WARNING conditions
+;   printed 1 note

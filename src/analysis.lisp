@@ -11,7 +11,8 @@
   (:export
    #:in-package-node-p
    #:lint
-   #:fix))
+   #:fix
+   #:after-change-function))
 
 (in-package #:breeze.analysis)
 
@@ -22,7 +23,7 @@
   "Returns the number of children of NODE, or nil if it doesn't have any
 children nodes."
   (let ((children (node-children node)))
-    (when (listp children)
+    (when (nodesp children)
       (length children))))
 
 (defun node-string= (state node string)
@@ -78,8 +79,9 @@ children nodes."
            (and (null package)
                 (node-string-equal state symbol-node name)))
           ((qualified-symbol possibly-internal-symbol)
-           (destructuring-bind (package-name-node symbol-name-node)
-               (node-children symbol-node)
+           (let* ((nodes (node-children symbol-node))
+                  (package-name-node (first-node nodes))
+                  (symbol-name-node (second-node nodes)))
              (and
               (node-string-equal state symbol-name-node name)
               (some (lambda (package-name)
@@ -175,7 +177,8 @@ children nodes."
       ?package-designator)))
 
 (defun in-package-node-p (state node)
-  "Is NODE a cl:in-package node?"
+  "Is NODE a cl:in-package node?
+N.B. This doesn't guarantee that it's a valid node."
   (let* ((*state* state)
          (*match-skip* #'whitespace-or-comment-node-p)
          (bindings (match #.(compile-pattern `(in-package :?package)) node))
@@ -191,13 +194,14 @@ children nodes."
 
 (defun find-node (position nodes)
   "Given a list of NODES, return which node contains the POSITION."
-  (when (listp nodes)
-    (loop :for node :in nodes
-          :for start = (node-start node)
-          :for end = (node-end node)
-          :for i :from 0
-          :when (and (<= start end) (< position end))
-            :do (return (cons node i)))))
+  (typecase nodes
+    (vector
+     (loop :for node :across nodes
+           :for start = (node-start node)
+           :for end = (node-end node)
+           :for i :from 0
+           :when (and (<= start end) (< position end))
+             :do (return (cons node i))))))
 
 (defun find-path-to-position (state position)
   "Given a list of NODES, return a path (list of cons (node . index))"
@@ -222,24 +226,29 @@ children nodes."
              "Call callback with NODE, DEPTH and ARGS."
              (apply callback node :depth depth args)))
       (etypecase tree
-        (list
-         (loop
-           :for i :from 0
-           :for previous = nil :then (first rest)
-           :for rest :on tree
-           :for node = (car rest)
-           ;; Recurse
-           :collect (%walk state
-                           callback
-                           (cb node
-                               :aroundp t
-                               :nth i
-                               :firstp (eq tree rest)
-                               :lastp (null (cdr rest))
-                               :previous previous
-                               :quotedp quotedp)
-                           (1+ depth)
-                           quotedp)))
+        (vector
+         (nodes
+          (loop
+            :for i :from 0
+            :for firstp = (zerop i)
+            :for lastp = (= (1- (length tree)) i)
+            :for previous = nil :then node
+            ;; :for rest :on tree
+            :for node :across tree
+            :for next = (unless lastp (aref tree (1+ i)))
+            ;; Recurse
+            :collect (%walk state
+                            callback
+                            (cb node
+                                :aroundp t
+                                :nth i
+                                :firstp firstp
+                                :lastp (null next)
+                                :previous previous
+                                :next next
+                                :quotedp quotedp)
+                            (1+ depth)
+                            quotedp))))
         (node
          (case (node-type tree)
            (parens
@@ -318,26 +327,23 @@ continue (recurse) in this new node instead.
   (push-diagnostic* start end severity format-string format-args))
 
 (defun diag-node (node severity format-string &rest format-args)
+  "Create a diagnostic object for NODE and push it into the special
+variable *diagnostics*."
   (push-diagnostic* (node-start node) (node-end node)
                     severity format-string format-args))
 
 (defun diag-warn (node format-string &rest format-args)
+  "Create a diagnostic object for NODE with severity :WARNING and push it
+into the special variable *diagnostics*."
   (apply #'diag-node node :warning format-string format-args))
 
 (defun diag-error (node format-string &rest format-args)
+  "Create a diagnostic object for NODE with severity :error and push it
+into the special variable *diagnostics*."
   (apply #'diag-node node :error format-string format-args))
 
 
 
-(defun warn-undefined-in-package (state node)
-  (alexandria:when-let ((package-designator-node (in-package-node-p state node)))
-
-    (let* ((package-designator (read-from-string (node-content state package-designator-node))))
-      (when (and (typep package-designator 'breeze.utils:string-designator)
-                 (null (find-package package-designator)))
-        (diag-warn
-         node
-         "Package ~s is not currently defined." package-designator)))))
 #|
 
 Which conditions should I use?
@@ -368,6 +374,13 @@ simple-condition-format-control, simple-condition-format-arguments
 
 (define-condition node-parse-error (simple-node-error parse-error) ())
 
+(defun node-parse-error (node message &key (replacement 'null))
+  (signal (make-condition
+           'node-parse-error
+           :node node
+           :format-control message
+           :replacement replacement)))
+
 (define-condition node-style-warning (simple-node-warning style-warning) ())
 
 (defun node-style-warning (node message &key (replacement 'null))
@@ -383,7 +396,18 @@ simple-condition-format-control, simple-condition-format-arguments
          (target-node c)
          (simple-condition-format-arguments c)))
 
-(defun warn-extraneous-whitespaces (state node firstp lastp previous)
+(defun warn-undefined-in-package (state node)
+  (alexandria:when-let ((package-designator-node (in-package-node-p state node)))
+    (and (valid-node-p node)
+         (let* ((content (node-content state package-designator-node))
+                (package-designator (read-from-string content)))
+           (when (and (typep package-designator 'breeze.string:string-designator)
+                      (null (find-package package-designator )))
+             (node-style-warning
+              node
+              (format nil "Package ~s is not currently defined." package-designator)))))))
+
+(defun warn-extraneous-whitespaces (state node firstp lastp previous next)
   (cond
     ((and firstp lastp)
      (node-style-warning
@@ -404,14 +428,16 @@ simple-condition-format-control, simple-condition-format-arguments
           (not (position #\Newline
                          (source state)
                          :start (node-start node)
-                         :end (node-end node))))
+                         :end (node-end node)))
+          ;; is not followed by a line comment
+          (not (line-comment-node-p next)))
      (node-style-warning
       node "Extraneous internal whitespaces."
       :replacement " "))))
 
 (defun error-invalid-node (node)
   (unless (valid-node-p node)
-    (diag-error node "Syntax error")))
+    (node-parse-error node "Syntax error")))
 
 (defun analyse (&key buffer-string point-max callback
                 &allow-other-keys
@@ -422,6 +448,7 @@ simple-condition-format-control, simple-condition-format-arguments
         (lambda (node &rest args &key depth aroundp beforep afterp
                                    firstp lastp nth
                                    previous
+                                   next
                                    quotedp
                  &allow-other-keys)
           (declare (ignorable depth beforep afterp nth args quotedp))
@@ -434,7 +461,7 @@ simple-condition-format-control, simple-condition-format-arguments
                       (warn-undefined-in-package state node)
                       (when (and (plusp depth)
                                  (whitespace-node-p node))
-                        (warn-extraneous-whitespaces state node firstp lastp previous)))
+                        (warn-extraneous-whitespaces state node firstp lastp previous next)))
                     ;; Always return the node, we don't want to modify it.
                     ;; Technically, we could return nil to avoid recursing into
                     ;; the node (when aroundp is true, that is).
@@ -447,8 +474,19 @@ simple-condition-format-control, simple-condition-format-arguments
              &allow-other-keys
              &aux (*diagnostics* '()))
   (handler-bind
-      ((node-style-warning (lambda (condition)
-                             (format *debug-io* "NODE-STYLE-WARNING")
+      ((node-parse-error (lambda (condition)
+                           #++ (progn
+                                 (format *debug-io* "~&NODE-PARSE-ERROR: ~a " condition)
+                                 (force-output *debug-io*))
+                           (diag-error (target-node condition)
+                                       (simple-condition-format-control condition)
+                                       (simple-condition-format-arguments condition))
+                           ;; Don't analyze further down that tree... I guess!
+                           (throw 'return-node nil)))
+       (node-style-warning (lambda (condition)
+                             #++ (progn
+                                   (format *debug-io* "~&NODE-STYLE-WARNING: ~a " condition)
+                                   (force-output *debug-io*))
                              (diag-warn (target-node condition)
                                         (simple-condition-format-control condition)
                                         (simple-condition-format-arguments condition)))))
@@ -467,7 +505,12 @@ simple-condition-format-control, simple-condition-format-arguments
                                            ;; (format *debug-io* "~&got the condition: ~a ~s" condition replacement)
                                            (when (stringp replacement)
                                              (write-string (replacement condition) out)))
-                                         (throw 'return-node nil)))))
+                                         (throw 'return-node nil))))
+                 #++ ;; TODO WIP
+                 (node-parse-error (lambda (condition)
+                                     (if (parens-node-p (target-node condition))
+                                         (target-node condition)
+                                         (signal condition)))))
               (analyse :buffer-string buffer-string
                        :point-max point-max
                        :callback (lambda (node &rest args &key
@@ -490,3 +533,38 @@ simple-condition-format-control, simple-condition-format-arguments
                                       (breeze.lossless-reader::write-node node state out)))
                                    node))))
           fixed-anything-p))
+
+
+
+;;; Incremental parsing (the interface with the editor at least)
+
+(defun push-edit (edit)
+  (declare (ignore edit))
+  #++ (print edit))
+
+;; TODO keep track of the buffers/files, process these kind of edits
+;; "object":
+;;
+;; (:DELETE-AT 18361 1)
+;; (:INSERT-AT 17591 ";")
+
+(defun breeze.analysis:after-change-function (start stop length &rest rest
+                                              &key
+                                                buffer-name
+                                                buffer-file-name
+                                                insertion
+                                              &allow-other-keys)
+  (declare (ignorable start stop length rest buffer-name buffer-file-name insertion)) ; yea, you heard me
+  ;; consider ignore-error + logs, because if something goes wrong in
+  ;; this function, editing is going to be funked.
+  (push-edit
+   (cond
+     ((zerop length)
+      (list :insert-at start insertion))
+     ((plusp length)
+      (list :delete-at start length))
+     (t :unknown-edit))))
+
+;; TODO add NOTE: "can't splice comment", but I whish I could
+;; e.g.  `  ;; (some | code)`
+;; paredit-splice-sexp or paredit-splice-sexp-killing-backward

@@ -32,16 +32,19 @@
   ((:file "logging")
    (:file "cl")
    (:file "utils")
+   (:file "indirection")
    (:file "string-utils" :depends-on ("utils"))
    (:file "test-file" :depends-on ("utils" "string-utils"))
    (:file "configuration")
-   (:file "lossless-reader" :depends-on ("utils"))
+   (:file "iterator")
+   (:file "lossless-reader" :depends-on ("utils" "iterator"))
    (:file "pattern")
    (:file "egraph")
    (:file "analysis" :depends-on ("lossless-reader" "pattern"))
    (:file "command"
     :depends-on ("utils"
-                 "configuration"))
+                 "configuration"
+                 "indirection"))
    (:file "asdf")
    (:file "thread" :depends-on ("xref"))
    (:file "xref" :depends-on ("utils"))
@@ -51,7 +54,8 @@
                  "command"))
    (:file "suggestion"
     :depends-on ("listener"))
-   (:file "refactor" :depends-on ("command" "utils" "cl" "analysis"))
+   (:file "refactor" :depends-on ( "command" "cl" "analysis"
+                                   "utils" "indirection"))
    (:file "project" :depends-on ("utils" "command" "configuration"))
    (:file "capture" :depends-on ("utils" "command" "configuration")))
   :in-order-to ((test-op (load-op breeze/test)))
@@ -106,8 +110,10 @@
   :serial t
   :components
   ((:file "utils")
+   (:file "string-utils")
    (:file "logging")
-   (:file "lossless-reader.randmized")
+   (:file "lossless-reader.randomized")
+   (:file "iterator")
    (:file "lossless-reader")
    (:file "pattern")
    (:file "analysis")

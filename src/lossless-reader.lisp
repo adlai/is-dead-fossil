@@ -4,10 +4,17 @@
     (:documentation "A fast, lossless, robust and superficial reader for a superset of
 common lisp.")
   (:use #:cl)
-  (:import-from #:breeze.utils
+  (:import-from #:breeze.string
                 #:subseq-displaced
                 #:+whitespaces+
                 #:whitespacep)
+  (:import-from #:breeze.iterator
+                #:vector-iterator
+                #:make-vector-iterator
+                #:pos
+                #:donep
+                #:next
+                #:value)
   (:import-from #:alexandria
                 #:when-let
                 #:when-let*)
@@ -20,6 +27,7 @@ common lisp.")
            #:source-substring)
   ;; Nodes
   (:export #:+end+
+           #:range
            #:node
            #:node-start
            #:node-end
@@ -28,6 +36,15 @@ common lisp.")
            #:copy-node
            #:valid-node-p
            #:node-content)
+  ;; Node sequences
+  (:export #:ensure-nodes
+           #:append-nodes
+           #:nodes
+           #:nodesp
+           #:nth-node
+           #:first-node
+           #:second-node
+           #:last-node)
   ;; Node constructors
   (:export #:block-comment
            #:parens
@@ -178,11 +195,11 @@ common lisp.")
     :type string
     :accessor source
     :documentation "The string being parsed.")
-   (pos
-    :initform 0
-    :initarg :pos
-    :accessor pos
-    :documentation "The position within the string.")
+   (iterator
+    :initarg :iterator
+    :type vector-iterator
+    :accessor iterator
+    :documentation "The iterator on the source.")
    (tree
     :initform 0
     :initarg :pos
@@ -200,19 +217,19 @@ common lisp.")
   (:documentation "The reader's state"))
 
 (defun make-state (string)
-  (make-instance 'state :source string))
+  (make-instance 'state
+                 :source string
+                 :iterator (make-vector-iterator string)))
 
 (defmethod print-object ((state state) stream)
   (print-unreadable-object
       (state stream :type t :identity nil)
-    (let ((excerpt (breeze.utils:around (source state)
-                                        (pos state))))
+    (let ((excerpt (breeze.string:around (source state)
+                                         (pos state))))
       (format stream "~s ~d/~d"
               excerpt
               (length excerpt)
               (length (source state))))))
-
-
 
 (alexandria:define-constant +end+ -1)
 
@@ -222,10 +239,18 @@ common lisp.")
             (:predicate rangep))
   (start 0
    :type (integer 0)
-   :read-only t)
+   ;; TODO Made non-readonly for testing incremental parsing, until I
+   ;; implement a better data structure
+   ;;
+   ;; :read-only t
+   )
   (end +end+
    :type (integer -1)
-   :read-only t))
+   ;; TODO Made non-readonly for testing incremental parsing, until I
+   ;; implement a better data structure
+   ;;
+   ;; :read-only t
+   ))
 
 (defstruct (node
             ;; (:constructor node (type start end &optional children))
@@ -238,14 +263,62 @@ common lisp.")
   (children '()
    :read-only t))
 
-(defun node (type start end &optional children)
+(defun ensure-nodes (x)
+  "Ensure that that X is a sequence of node."
+  (typecase x
+    (null nil)
+    (vector x)
+    (cons (coerce x 'vector))
+    (t (vector x))))
+
+(defun append-nodes (nodes1 nodes2)
+  "Concatenate two sequences of nodes."
+  (concatenate 'vector nodes1 nodes2))
+
+;; (declaim (inline %nodes))
+(defun %nodes (x y)
+  "Create a sequence of nodes. But less user-friendly."
+  (if x
+      (if y
+          (append-nodes (ensure-nodes x) (ensure-nodes y))
+          (ensure-nodes x))
+      (when y (ensure-nodes y))))
+
+(defun nodes (&optional node &rest nodes)
+  "Create a sequence of nodes."
+  (%nodes node nodes))
+
+(defun nodesp (x)
+  (vectorp x))
+
+(defun nth-node (nodes n)
+  (when nodes
+    (aref nodes n)))
+
+(defun first-node (nodes)
+  (nth-node nodes 0))
+
+(defun second-node (nodes)
+  (nth-node nodes 1))
+
+(defun last-node (nodes)
+  (nth-node nodes (1- (length nodes))))
+
+(defun node (type start end &optional child &rest children)
   #++ (when (= +end+ end)
         (break))
   (make-node
    :type type
    :start start
    :end end
-   :children children))
+   :children (if children
+                 (%nodes child children)
+                 child)))
+
+(defmethod make-load-form ((node node) &optional environment)
+  (make-load-form-saving-slots node
+                               :slot-names '(start end type children)
+                               :environment environment))
 
 
 ;;; Constructors
@@ -258,36 +331,59 @@ common lisp.")
              `(progn
                 ;; predicate
                 (defun
+                    ;; name of the predicate
                     ,(alexandria:symbolicate type '-node-p)
+                    ;; lambda list
                     (node)
+                  ;; docstring
                   ,(format nil "Is this a node of type ~s" type)
+                  ;; predicate's implementation
                   (and (nodep node)
                        (eq (node-type node) ',type)
                        node))
                 ;; constructor
                 ,(unless no-constructor-p
-                   `(defun ,name (start end
-                                  ,@(when children
-                                      (case children
-                                        (&optional (list '&optional 'children))
-                                        ((t) (list 'children))
-                                        (t (alexandria:ensure-list children)))))
-                      (node ',type start end ,@(when children
-                                                 (if (eq t children)
-                                                     (list 'children)
-                                                     (alexandria:ensure-list children))))))
+                   `(defun
+                        ;; name of the constructor function
+                        ,name
+                        ;; lambda list
+                        (start end
+                         ,@(when children
+                             (case children
+                               ;; :children &optional
+                               (&optional (list '&optional 'children))
+                               ;; :children t
+                               ((t) (list 'children))
+                               ;; :children some-name
+                               (t (alexandria:ensure-list children)))))
+                      ,(format nil "Make a node of type ~s" type)
+                      ;; constructor's implementation
+                      ,(cond
+                         ((null children)
+                          `(node ',type start end))
+                         ((eq t children)
+                          `(node ',type start end children))
+                         (t
+                          `(node ',type start end ,@(list children))))))
                 ;; copier
-                (defun ,(alexandria:symbolicate 'copy- name)
-                    (node &key (start nil startp)
+                (defun
+                    ;; name of the copier function
+                    ,(alexandria:symbolicate 'copy- name)
+                    ;; lambda list
+                    (node &key
+                            (start nil startp)
                             (end nil endp)
                             ,@(when children
                                 (list `(children nil childrenp))))
+                  ;; docstring
+                  ,(format nil "Make a shallow copy of a node of type ~s, possibly replacing one of the attributes." type)
+                  ;; copier's implementation
                   (node ',type
                         (if startp start (node-start node))
                         (if endp end (node-end node))
+                        ;; N.B. This is just a shallow copy
                         ,@(when children
                             `((if childrenp children (node-children node)))))))))
-  ;; TODO more of then needs children...
   (aux whitespace)
   (aux block-comment)
   (aux line-comment)
@@ -326,13 +422,17 @@ common lisp.")
 (defun parens (start end &optional children)
   (node 'parens start end
         (if (nodep children)
-            (list children)
+            (nodes children)
             children)))
+
+(defun print-nodes (stream nodes colonp atp)
+  (declare (ignore colonp atp))
+  (format stream "(list ~{~s~^ ~})" nodes))
 
 (defmethod print-object ((node node) stream)
   (let ((*print-case* :downcase)
         (children (node-children node)))
-    (format stream "(~:[node '~;~]~s ~d ~d~:[ ~s~;~@[ (list ~{~s~^ ~})~]~])"
+    (format stream "(~:[node '~;~]~s ~d ~d~:[ ~s~;~@[ ~/breeze.lossless-reader::print-nodes/~]~])"
             (member (node-type node)
                     '(parens
                       token
@@ -363,17 +463,6 @@ common lisp.")
             (node-end node)
             (listp children)
             children)))
-
-;; TODO make a test out of this
-#++
-(mapcar
- #'princ-to-string
- (list
-  (node 'asdf 1 3)
-  (node 'asdf 1 3 (node 'qwer 3 5))
-  (node 'asdf 1 3 (list (node 'qwer 3 5)
-                        (node 'uiop 6 8)))
-  (parens 3 5)))
 
 
 ;;; Predicates
@@ -442,11 +531,17 @@ common lisp.")
 
 ;;; Reader position (in the source string)
 
+(defmethod pos ((state state))
+  (pos (iterator state)))
+
+(defmethod (setf pos) (new-pos (state state))
+  (setf (pos (iterator state)) new-pos))
+
+(defmethod donep ((state state))
+  (donep (iterator state)))
+
 (defun valid-position-p (state position)
   (< -1 position (length (source state))))
-
-(defun donep (state)
-  (not (valid-position-p state (pos state))))
 
 
 ;;; Getting and comparing characters
@@ -524,7 +619,6 @@ the occurence of STRING."
 
 ;; 2023-05-20 only used in read-token
 ;; 2024-01-03 and read- dispatch reader macro
-;; TODO return a range instead of a list
 (defun read-while (state predicate &key (advance-position-p t) (start (pos state)))
   "Returns nil or (list start end)"
   (loop
@@ -535,7 +629,7 @@ the occurence of STRING."
     :do (when (or (null c) (not (funcall predicate c)))
           (when (/= start pos)
             (when advance-position-p (setf (pos state) pos))
-            (return (list start pos)))
+            (return (range start pos)))
           (return nil))))
 
 ;; Will be useful for finding some synchronization points
@@ -616,10 +710,14 @@ the occurence of STRING."
 
 ;; TODO rename read-integer
 (defun read-number (state &optional (radix 10))
-  (let ((range (read-while state #'(lambda (char) (digit-char-p char radix)))))
-    (when range
-      (let ((*read-base* radix))
-        (values (read-from-string (apply #'source-substring state range)) range)))))
+  (when-let ((range (read-while state
+                                (lambda (char)
+                                  (digit-char-p char radix)))))
+    (values (parse-integer (source state)
+                           :start (start range)
+                           :end (end range)
+                           :radix radix)
+            range)))
 
 ;;; TODO in the following read-sharpsign-* functions, number should be
 ;;; renamed "prefix"
@@ -634,9 +732,12 @@ the occurence of STRING."
       (node 'sharp-char start (if token (pos state) +end+) token))))
 
 (defun read-any* (state)
+  "Like READ-ANY, but return the end of the read and a sequence of nodes
+as two values (Wheras READ-ANY returns two nodes (also as values), the
+first node being whitespaces.)"
   (multiple-value-bind (whitespaces form)
       (read-any state t)
-    (let ((children (remove-if #'null (list whitespaces form)))
+    (let ((children (%nodes whitespaces form))
           (end (if (and form
                         (valid-node-p form))
                    (pos state)
@@ -689,6 +790,7 @@ the occurence of STRING."
     (%read-sharpsign-any state start 'sharp-eval)))
 
 (defun %read-sharpsign-number (state start type radix)
+  "Read a number"
   (let ((n (read-number state radix)))
     (node type start (if n (pos state) +end+))))
 
@@ -699,10 +801,11 @@ the occurence of STRING."
     (%read-sharpsign-number state start 'sharp-binary 2)))
 
 (defun read-sharpsign-o (state start number)
-  (declare (ignore number))
-  ;; TODO (if number) => invalid syntax
-  (when (read-char* state #\b nil)
-    (%read-sharpsign-number state start 'sharp-octal 8)))
+  (when (read-char* state #\o nil)
+    (if number
+        ;; (if number) => invalid syntax
+        (node 'sharp-octal start +end+)
+        (%read-sharpsign-number state start 'sharp-octal 8))))
 
 (defun read-sharpsign-x (state start number)
   (declare (ignore number))
@@ -712,8 +815,49 @@ the occurence of STRING."
 
 (defun read-sharpsign-r (state start radix)
   (when (read-char* state #\r nil)
-    (let ((n (read-number state radix)))
-      (node 'sharp-radix start (if n (pos state) +end+)))))
+    (cond
+      ((null radix)
+       ;; radix missing in #R
+
+       ;; Some ideas to improve error detection, reporting and correction
+       ;;
+       ;; TODO here we could try to call "read-number" anyway
+       ;;
+       ;; TODO we could try with radix = 36 to be the "most
+       ;; inclusive", if that fails we can tell the user "char <X> is
+       ;; not a valid digit, even if the radix was set correctly"
+       ;;
+       ;; TODO we could try to infer which radix would make sense? but
+       ;; if they're using "R" it's probably because it's a weird
+       ;; radix... we could tell the user which minimal radix would
+       ;; work.
+       ;;
+       ;; TODO each node could have a list of errors (diagnostics?)
+       ;; attached, so we can have better feedback than just "syntax
+       ;; error" (could we re-use the node-children to store the
+       ;; diagnostics?)
+       ;;
+       ;; TODO if we fail to parse this, it would be nice to tell the
+       ;; caller (read-sharpsign-dispatching-reader-macro -> read-any)
+       ;; where it would make sense to restart reading. I think it's
+       ;; something doable for terminals (e.g. not read-parens)
+       ;;
+       ;; TODO instead of one sentinel value (+end+), we could use
+       ;; negative positions... we could encode the "where to restart
+       ;; reading" with this.
+       ;;   - valid-node-p could use =(not (minusp 0))= to check if
+       ;;     =(node-end node)= is considered valid.
+       ;;   - -1 could still be used as "no-end"
+       ;;   - any POS below -1 would mean "I think we can can restart
+       ;;     parsing at position (- (1+ POS))
+       ;; TODO write those in docs/*.org, like a normal human being
+       (node 'sharp-radix start +end+))
+      ((not (<= 2 radix 36))
+       ;; illegal radix for #R: <X>.
+       (node 'sharp-radix start +end+))
+      (t
+       (let ((n (read-number state radix)))
+         (node 'sharp-radix start (if n (pos state) +end+)))))))
 
 (defun read-sharpsign-c (state start number)
   (declare (ignore number))
@@ -744,15 +888,7 @@ the occurence of STRING."
   (when (read-char* state #\=)
     (multiple-value-bind (end children)
         (read-any* state)
-      ;; TODO sharp-label would benefit from having it own data
-      ;; structure, this is abusing the children
-      (node 'sharp-label start end
-            (append
-             (when (and (integerp number)
-                        (<= 0 number))
-               (list :label number))
-             (when children
-               (list :form children)))))))
+      (node 'sharp-label start end (%nodes number children)))))
 
 (defun read-sharpsign-sharpsign (state start number)
   (when (read-char* state #\#)
@@ -836,20 +972,20 @@ provided."
            (cond
              ((null c)
               (setf (pos state) pos)
-              (return (list start +end+)))
+              (return (range start +end+)))
              ((char= c delimiter)
               (setf (pos state) (1+ pos))
-              (return (list start (1+ pos))))
+              (return (range start (1+ pos))))
              ((char= c escape) (incf pos))
              ((and validp
                    (not (funcall validp c)))
               (setf (pos state) pos)
-              (return (list start 'invalid))))))))
+              (return (range start +end+))))))))
 
 (defreader read-string ()
   "Read \"\""
-  (when-let ((string (read-quoted-string state #\" #\\)))
-    (apply #'node 'string string)))
+  (when-let ((range (read-quoted-string state #\" #\\)))
+    (node 'string (start range) (end range))))
 
 (defun not-terminatingp (c)
   "Test whether a character is terminating. See
@@ -873,7 +1009,7 @@ http://www.lispworks.com/documentation/HyperSpec/Body/02_ad.htm"
 (defreader read-backslash ()
   (when (read-char* state #\\)
     (when (read-char* state)
-      (list start (pos state)))))
+      (range start (pos state)))))
 
 (defreader read-pipe ()
   (when (current-char= state #\|)
@@ -892,6 +1028,7 @@ http://www.lispworks.com/documentation/HyperSpec/Body/02_ad.htm"
   (untrace))
 
 (defun %token-symbol-node (string &optional (start 0) (end (length string)))
+  "See TOKEN-SYMBOL-NODE's docstring."
   (when (and string start end
              (< -1 start end)
              (plusp (length string)))
@@ -914,7 +1051,7 @@ http://www.lispworks.com/documentation/HyperSpec/Body/02_ad.htm"
           (and (not (= position (1- end)))
                (node 'qualified-symbol
                      start end
-                     (list
+                     (nodes
                       (node 'package-name start position)
                       (node 'symbol-name (1+ position) end)))))))
       ;; p::x
@@ -925,7 +1062,7 @@ http://www.lispworks.com/documentation/HyperSpec/Body/02_ad.htm"
             (char= #\: (char string (1+ first)))
             (node 'possibly-internal-symbol
                   start end
-                  (list
+                  (nodes
                    (node 'package-name start first)
                    (node 'symbol-name (+ 2 first) end)))))))))
 
@@ -956,7 +1093,7 @@ Returns a new node with one of these types:
                 (not-terminatingp (current-char state))
                 (not (donep state)))
     :finally (return (unless (= start (pos state))
-                       (let ((end (if part (second part) +end+)))
+                       (let ((end (if part (end part) +end+)))
                          (token start end)
                          ;; for debugging
                          #++
@@ -988,7 +1125,7 @@ Returns a new node with one of these types:
          (string (source state)))
     `(,pos
       ,(at state pos)
-      ,(breeze.utils:around string pos))))
+      ,(breeze.string:around string pos))))
 
 
 ;; don't forget to handle dotted lists
@@ -1002,8 +1139,8 @@ Returns a new node with one of these types:
       :when el
         :collect el :into content
       :unless (valid-node-p el)
-        :do (return (parens start +end+ content))
-      :finally (return (parens start (pos state) content)))))
+        :do (return (parens start +end+ (ensure-nodes content)))
+      :finally (return (parens start (pos state) (ensure-nodes content))))))
 
 ;; TODO add tests with skip-whitespaces-p set
 (defun read-any (state &optional skip-whitespaces-p)
@@ -1031,19 +1168,30 @@ Returns a new node with one of these types:
 
 ;;; Putting it all toghether
 
-(defun parse (string &aux (state (make-state string)))
+(defun parse (string &optional (state (make-state string)))
   "Parse a string, stop at the end, or when there's a parse error."
-  (setf (tree state)
-        (loop
-          ;; :for i :from 0
-          :for node-start = (pos state)
-          :for node = (read-any state)
-          ;; :when (< 9000 i) :do (error "Really? over 9000 top-level forms!? That must be a bug...")
-          :when node
-            :collect node
-          :while (and (valid-node-p node)
-                      (not (donep state)))))
+  (let ((result (make-array '(0) :adjustable t :fill-pointer t)))
+    (loop
+      ;; :for i :from 0
+      :for node-start = (pos state)
+      :for node = (read-any state)
+      ;; :when (< 9000 i) :do (error "Really? over 9000 top-level forms!? That must be a bug...")
+      :when node
+        :do (vector-push-extend node result)
+      :while (and (valid-node-p node)
+                  (not (donep state))))
+    (setf (tree state) result))
   state)
+
+(defun reparse (state)
+  (loop
+    :for node-start = (pos state)
+    :for node = (read-any state)
+    ;; :when (< 9000 i) :do (error "Really? over 9000 top-level forms!? That must be a bug...")
+    :when node
+      :collect node
+    :while (and (valid-node-p node)
+                (not (donep state)))))
 
 ;; (parse "#2()")
 ;; (parse "(")
@@ -1108,21 +1256,23 @@ Returns a new node with one of these types:
                            (end node)))))
 
 (defun %unparse (tree state stream depth transform)
-  (when tree
-    (if (listp tree)
-        (mapcar (lambda (node)
-                  (%unparse (funcall transform node)
-                            state stream (1+ depth)
-                            transform))
-                tree)
-        (case (node-type tree)
-          (parens
-           (write-char #\( stream)
-           (%unparse (node-children tree) state stream depth transform)
-           (unless (no-end-p tree)
-             (write-char #\) stream)))
-          (t
-           (write-node (funcall transform tree) state stream))))))
+  (etypecase tree
+    (null)
+    (vector
+     (map nil (lambda (node)
+                (%unparse (funcall transform node)
+                          state stream (1+ depth)
+                          transform))
+          tree))
+    (node
+     (case (node-type tree)
+       (parens
+        (write-char #\( stream)
+        (%unparse (node-children tree) state stream depth transform)
+        (unless (no-end-p tree)
+          (write-char #\) stream)))
+       (t
+        (write-node (funcall transform tree) state stream))))))
 
 (defun unparse (state &optional (stream t) (transform #'identity))
   (if stream

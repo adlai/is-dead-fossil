@@ -3,7 +3,8 @@
 (uiop:define-package #:breeze.test.refactor
     (:use :cl #:breeze.refactor)
   ;; Importing non-exported symbols of the "package under test"
-  (:import-from #:breeze.refactor)
+  (:import-from #:breeze.refactor
+                #:infer-project-name)
   ;; Things needed to "drive" a command
   (:import-from #:breeze.command
                 #:start-command
@@ -20,9 +21,11 @@
                 #:outer-node)
   (:import-from #:breeze.test.command
                 #:drive-command)
-  (:import-from #:breeze.utils
+  (:import-from #:breeze.string
                 #:remove-indentation
                 #:split-by-newline)
+  (:import-from #:breeze.indirection
+                #:with-simple-indirections)
   (:import-from #:parachute
                 #:define-test
                 #:define-test+run
@@ -36,6 +39,22 @@
 (defparameter *directory* "./")
 
 
+
+(define-test infer-project-name
+  (false
+   (with-simple-indirections
+       ((breeze.utils:find-version-control-root))
+     (infer-project-name "some path"))
+   "infer-project-name should return nil if the version control root directory was not found")
+  (is string= "foobar"
+      (with-simple-indirections
+          ((breeze.utils:find-version-control-root
+            #p"/home/nobody/projects/foobar/"))
+        (infer-project-name "some path"))
+      "infer-project-name should return the name of the version control root directory when it is found"))
+
+
+
 ;;; Testing suggestions
 
 ;; TODO...
@@ -43,14 +62,18 @@
 
 ;;; Test refactoring commands
 
+;; TODO this probably belongs in "tests/commands.lisp"
 (define-test "All commands must be exported"
-  (let ((commands (remove-if #'breeze.xref:externalp (breeze.refactor::all-commands))))
+  (let ((commands (remove-if #'breeze.xref:externalp (breeze.command:list-all-commands))))
     (false commands "The following commands are not exported:~%~{  - ~S~%~}" commands)))
 
 (defun missing-tests ()
   (set-difference
    ;; List all commands
-   (breeze.refactor::all-commands)
+   (append
+    breeze.refactor::*commands-applicable-at-toplevel*
+    breeze.refactor::*commands-applicable-in-a-loop-form*
+    breeze.refactor::*commands-applicable-inside-another-form-or-at-toplevel*)
    ;; List relevant tests
    (remove-if-not #'symbolp
                   (mapcar #'parachute:name (parachute:package-tests *package*)))
@@ -243,22 +266,22 @@ newline in the expected result."
           (split-by-newline (second request))))))
 
 (define-test+run insert-breeze-define-command
-    (let* ((trace (drive-command #'insert-breeze-define-command
-                                 :inputs '("rmrf")
-                                 :context '())))
-      (common-trace-asserts 'insert-breeze-define-command trace 3)
-      (destructuring-bind (input request) (first trace)
-        (is string= "read-string" (first request))
-        (is string= "Name of the command (symbol): " (second request))
-        (is string= nil (third request)))
-      (destructuring-bind (input request) (second trace)
-        (is equal '"rmrf" input)
-        (is string= "insert" (first request))
-        (is equal
-            '("(define-command rmrf ()"
-              "  \"Rmrf.\""
-              "  )")
-            (split-by-newline (second request))))))
+  (let* ((trace (drive-command #'insert-breeze-define-command
+                               :inputs '("rmrf")
+                               :context '())))
+    (common-trace-asserts 'insert-breeze-define-command trace 3)
+    (destructuring-bind (input request) (first trace)
+      (is string= "read-string" (first request))
+      (is string= "Name of the command (symbol): " (second request))
+      (is string= nil (third request)))
+    (destructuring-bind (input request) (second trace)
+      (is equal '"rmrf" input) ;; TODO the linter should warn me about the extraneous quote
+      (is string= "insert" (first request))
+      (is equal
+          '("(define-command rmrf ()"
+            "  \"Rmrf.\""
+            "  )")
+          (split-by-newline (second request))))))
 
 (define-test+run insert-defun
   (let* ((trace (drive-command #'insert-defun
@@ -304,7 +327,7 @@ newline in the expected result."
     (destructuring-bind (input request) (third trace)
       (is equal '"var" input)
       (is string= "insert" (first request))
-      (is string= "*var* " (second request)))
+      (is string= "*var*" (second request)))
     (destructuring-bind (input request) (fourth trace)
       (is string= "read-string" (first request))
       (is string= "Initial value: " (second request))
@@ -313,7 +336,7 @@ newline in the expected result."
       (is equal '"42" input)
       (is string= "insert" (first request))
       (is equal
-          '("42"
+          '(" 42"
             "")
           (split-by-newline (second request))))
     (destructuring-bind (input request) (sixth trace)
@@ -440,7 +463,6 @@ newline in the expected result."
             "(in-package #:pkg)")
           (split-by-newline (second request))))))
 
-
 (define-test+run insert-defparameter
   (let* ((trace (drive-command #'insert-defparameter
                                :inputs '("param" "\"meh\""
@@ -459,7 +481,7 @@ newline in the expected result."
     (destructuring-bind (input request) (third trace)
       (is string= "param" input)
       (is string= "insert" (first request))
-      (is string= "*param* " (second request)))
+      (is string= "*param*" (second request)))
     (destructuring-bind (input request) (fourth trace)
       (false input)
       (is string= "read-string" (first request))
@@ -469,7 +491,7 @@ newline in the expected result."
       (is string= "\"meh\"" input)
       (is string= "insert" (first request))
       (is equal
-          '("\"meh\""
+          '(" \"meh\""
             "")
           (split-by-newline (second request))))
     (destructuring-bind (input request) (sixth trace)
@@ -684,11 +706,12 @@ strings get concatenated."
 
 #++
 (test-quickfix "blah.lisp" "" ""
-               :inputs '("Insert a defpackage form."))
+               :inputs '("Insert a defpackage form." "foo"))
+
 
 #++
 (test-quickfix "blah.lisp" "  " "  "
-               :inputs '("Insert a defpackage form."))
+               :inputs '("Insert a defpackage form." "foo"))
 
 
 (defun expect-suggestions (&rest expected-suggested-commands)
@@ -744,3 +767,65 @@ strings get concatenated."
 (buffer-string
  (alexandria:plist-hash-table
   '(:buffer-string "asdf")))
+
+#++ ;; TODO modify a define-package/defpackage form to add 1
+;; import-from "clause". In this case alexandria:when-let
+(let* ((input
+        "(uiop:define-package #:package
+    (:use #:cl)
+  (:use-reexport #:breeze.lossless-reader #:breeze.pattern)
+  ;; Category A
+  (:export
+   #:a
+   #:b
+   #:c)
+  ;; Category B
+  (:export
+   #:d
+   #:e
+   #:f))")
+       (expected-output
+        "(uiop:define-package #:package
+    (:use #:cl)
+  (:use-reexport #:breeze.lossless-reader #:breeze.pattern)
+  ;; Category A
+  (:export
+   #:a
+   #:b
+   #:c)
+  ;; Category B
+  (:export
+   #:d
+   #:e
+   #:f)
+  (:import-from #:alexandria
+                #:when-let))")
+       (state (read-))))
+
+#++ ;; TODO
+(define-test "simple format fixes"
+    (let* ((trace (drive-command #'fix-formatting
+                                 :inputs '()
+                                 :context '())))
+      (common-trace-asserts 'fix-formatting trace 4)
+
+      ;; TODO
+      (destructuring-bind (input request) (first trace)
+        (false input)
+        (is string= "read-string" (first request))
+        (is string= "Name of the object (parameter name of the method): " (second request))
+        (false (third request)))
+      (destructuring-bind (input request) (second trace)
+        (is string= "node" input)
+        (is string= "read-string" (first request))
+        (is string= "Type of the object: " (second request))
+        (false (third request)))
+      (destructuring-bind (input request) (third trace)
+        (is string= "node" input)
+        (is string= "insert" (first request))
+        (is equal
+            '("(defmethod print-object ((node node) stream)"
+              "  (print-unreadable-object"
+              "      (node stream :type t :identity nil)"
+              "    (format stream \"~s\" (node-something node))))")
+            (split-by-newline (second request))))))

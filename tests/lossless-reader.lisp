@@ -23,13 +23,6 @@ newline or +end+)
 
 ;;; Reader state
 
-#++
-(progn
-  (node 'boo 1 2)
-  #s(node :type boo :start 1 :end 2)
-  (list #s(node :type boo :start 1 :end 2))
-  (list '#s(node :type boo :start 1 :end 2)))
-
 
 ;;; testing helpers
 
@@ -148,6 +141,66 @@ newline or +end+)
 ;; TODO test "next-char="
 (define-test+run next-char=)
 
+
+;;; Node structs
+
+(define-test+run node-constructor
+  (is equalp (node 'x 0 0) (node 'x 0 0))
+  (is equalp (node 'x 0 2 (node 'y 1 2)) (node 'x 0 2 (node 'y 1 2)))
+  (is equalp
+      (node 'x 0 3 (node 'y 1 2) (node 'z 2 3))
+      (node 'x 0 3 (nodes (node 'y 1 2) (node 'z 2 3))))
+  (is equalp (node 'parens 1 2) (parens 1 2))
+  (is equalp (parens 1 2 'x) (parens 1 2 'x))
+  (is equalp
+      (parens 1 2 (node 'x 3 4))
+      (parens 1 2 (nodes (node 'x 3 4)))))
+
+(defun test-node-print-object (node &optional expected)
+  (is-equalp
+   :input node
+   :got (prin1-to-string node)
+   :form `(prin1-to-string ,node)
+   :expected expected))
+
+(define-test+run node-print-object
+  (test-node-print-object (node 'asdf 1 3) "(node 'asdf 1 3)")
+  (test-node-print-object #s(node :type boo :start 1 :end 2) "(node 'boo 1 2)")
+  (test-node-print-object
+   (list #s(node :type boo :start 1 :end 2))
+   "((node 'boo 1 2))")
+  (test-node-print-object
+   (node 'asdf 1 3 (node 'qwer 3 5))
+   "(node 'asdf 1 3 (node 'qwer 3 5))")
+  (test-node-print-object
+   (node 'asdf 1 3 (list (node 'qwer 3 5) (node 'uiop 6 8)))
+   "(node 'asdf 1 3 (list (node 'qwer 3 5) (node 'uiop 6 8)))")
+  (test-node-print-object
+   (node 'asdf 1 3 (nodes (node 'qwer 3 5) (node 'uiop 6 8)))
+   "(node 'asdf 1 3 #((node 'qwer 3 5) (node 'uiop 6 8)))")
+  (test-node-print-object
+   (node 'asdf 1 3 #((node 'qwer 3 5) (node 'uiop 6 8)))
+   "(node 'asdf 1 3 #((node 'qwer 3 5) (node 'uiop 6 8)))")
+  (test-node-print-object
+   (parens 3 5) "(parens 3 5)")
+  (test-node-print-object
+   (parens 3 5 'x) "(parens 3 5 x)"))
+
+(define-test+run ensure-nodes
+  (false (ensure-nodes nil))
+  (is equalp #(t) (ensure-nodes t))
+  (is equalp #(t) (ensure-nodes (ensure-nodes t)))
+  (is equalp #(a b c) (ensure-nodes '(a b c))))
+
+(define-test+run nodes
+  (false (%nodes nil nil))
+  (is equalp #(t) (%nodes t nil))
+  (is equalp #(t t) (%nodes t t))
+  (is equalp #(t) (%nodes nil t))
+  (false (nodes))
+  (is equalp #(t) (nodes t))
+  (is equalp #(a b) (nodes 'a 'b))
+  (is equalp #(a b c) (nodes 'a 'b 'c)))
 
 
 ;;; Low-level parsing helpers
@@ -271,14 +324,43 @@ newline or +end+)
                                expected-pos
                                expected-children
                                given-numeric-argument)
-  "Helps testing the read-sharpsign-* functions."
+  "Helps testing the read-sharpsign-* functions.
+
+SHARPSING-READER-FUNCTION is the function under test.
+
+NODE-TYPE is the expected type of the node returned by
+SHARPSING-READER-FUNCTION.
+
+INPUT can be a list or a string, this is used to determine where to
+start reading. If it is a string it is assumed that the first
+character is a #. If it is a list, its element will be concatenated
+into one string and the reader will start at the end of the first
+element.
+
+EXPECTED-END is the expected node's end. E.g. (true (eql expected-end (node-end node)))
+
+EXPECTED-POS is the expected position of the parser's state after the
+SHARPSING-READER-FUNCTION's execution.
+
+EXPECTED-CHILDREN is the exepected list of node's children
+
+GIVEN-NUMERIC-ARGUMENT is passed to SHARPSING-READER-FUNCTION as the
+\"optional sequence of digits\" (in the hyperspec's words) read by
+the function read-sharpsign-dispatching-reader-macro
+"
   (let* ((starting-position (if (listp input) (length (first input)) 1))
          (input (if (listp input) (apply 'concatenate 'string input) input))
          (expected-end (or expected-end (length input)))
-         (expected-pos (or expected-pos expected-end)))
+         (expected-pos (or expected-pos expected-end))
+         (expected-children (if (listp expected-children)
+                                ;; coerce to vector
+                                (if (breeze.utils:length>1? expected-children)
+                                    (ensure-nodes expected-children)
+                                    (first expected-children))
+                                expected-children)))
     (with-state (input)
       (setf (pos state) starting-position)
-      (let* ((expected (node node-type 0
+    (let* ((expected (node node-type 0
                              expected-end
                              expected-children))
              (got
@@ -288,7 +370,7 @@ newline or +end+)
                               state
                               ;; Assumes we started reading the
                               ;; # as the first character.
-                              0
+                              0 ;; TODO shouldn't this be "starting-position"?
                               given-numeric-argument)
                 :form (list sharpsing-reader-function
                             state 0 given-numeric-argument)
@@ -339,13 +421,13 @@ newline or +end+)
 
 (define-test+run read-sharpsign-quote
   (test-read-sharpsign-quote "#'" nil +end+)
-  (test-read-sharpsign-quote "#' " (list (whitespace 2 3)) +end+)
-  (test-read-sharpsign-quote "#'a" (list (token 2 3)) 3)
-  (test-read-sharpsign-quote "#' a" (list (whitespace 2 3)
-                                          (token 3 4))
+  (test-read-sharpsign-quote "#' " (nodes (whitespace 2 3)) +end+)
+  (test-read-sharpsign-quote "#'a" (nodes (token 2 3)) 3)
+  (test-read-sharpsign-quote "#' a" (nodes (whitespace 2 3)
+                                           (token 3 4))
                              4)
-  (test-read-sharpsign-quote "#'(lambda...)" (list (parens 2 13
-                                                           (list (token 3 12))))
+  (test-read-sharpsign-quote "#'(lambda...)" (nodes (parens 2 13
+                                                            (token 3 12)))
                              13))
 
 
@@ -429,13 +511,156 @@ newline or +end+)
 
 (define-test+run read-sharpsign-dot
   (test-read-sharpsign-dot "#." nil +end+)
-  (test-read-sharpsign-dot "#.a" (list (token 2 3)) 3)
-  (test-read-sharpsign-dot "#. a" (list (whitespace 2 3)
-                                        (token 3 4))
+  (test-read-sharpsign-dot "#.a" (nodes (token 2 3)) 3)
+  (test-read-sharpsign-dot "#. a" (nodes (whitespace 2 3)
+                                         (token 3 4))
                            4))
+
+;;; #b sharp-binary
+
+(defun test-read-sharpsign-b (input &key child end)
+  (test-read-sharpsign*
+   :sharpsing-reader-function 'read-sharpsign-b
+   :node-type 'sharp-binary
+   :input input
+   :expected-end end
+   :expected-children child))
+
+(define-test+run read-sharpsign-b
+  (test-read-sharpsign-b "#b" :end +end+)
+  (test-read-sharpsign-b "#B" :end +end+)
+  (test-read-sharpsign-b "#bx" :end +end+)
+  (test-read-sharpsign-b "#Bx" :end +end+)
+  (test-read-sharpsign-b "#b1")
+  (test-read-sharpsign-b "#B1")
+  (test-read-sharpsign-b "#b666" :end +end+)
+  (test-read-sharpsign-b "#b9" :end +end+))
+
+;; TODO this in invalid (float binary): (read-from-string "#b0.1")
+;; TODO this in invalid (ratinal binary): (read-from-string "#b0/2")
+;; TODO this is valid (rational binary): (read-from-string "#b0/1")
 
 
-;;; #c
+;;; #o sharp-octal
+
+(defun test-read-sharpsign-o (input &key child end)
+  (test-read-sharpsign*
+   :sharpsing-reader-function 'read-sharpsign-o
+   :node-type 'sharp-octal
+   :input input
+   :expected-end end
+   :expected-children child))
+
+(define-test+run read-sharpsign-o
+  (test-read-sharpsign-o "#o" :end +end+)
+  (test-read-sharpsign-o "#O" :end +end+)
+  (test-read-sharpsign-o "#ox" :end +end+)
+  (test-read-sharpsign-o "#Ox" :end +end+)
+  (test-read-sharpsign-o "#o1")
+  (test-read-sharpsign-o "#O1")
+  (test-read-sharpsign-o "#o666")
+  (test-read-sharpsign-o "#o9" :end +end+))
+
+;; TODO this in invalid (float octal): (read-from-string "#o0.1")
+;; TODO this is valid (rational octal): (read-from-string "#o0/3")
+
+
+;;; #x sharp-hexa
+
+(defun test-read-sharpsign-x (input &key child end)
+  (test-read-sharpsign*
+   :sharpsing-reader-function 'read-sharpsign-x
+   :node-type 'sharp-hexa
+   :input input
+   :expected-end end
+   :expected-children child))
+
+(define-test+run read-sharpsign-x
+  (test-read-sharpsign-x "#x" :end +end+)
+  (test-read-sharpsign-x "#X" :end +end+)
+  (test-read-sharpsign-x "#xx" :end +end+)
+  (test-read-sharpsign-x "#Xx" :end +end+)
+  (test-read-sharpsign-x "#x1")
+  (test-read-sharpsign-x "#X1")
+  (test-read-sharpsign-x "#x666")
+  (test-read-sharpsign-x "#xF")
+  (test-read-sharpsign-x "#xf")
+  (test-read-sharpsign-x "#xz" :end +end+))
+
+;; TODO this in invalid (float hex): (read-from-string "#x0.1")
+;; TODO this is valid (rational hex): (read-from-string "#x0/3")
+
+
+;;; #r sharp-radix
+
+(defun split-at (string char)
+  (let ((p (position-if (lambda (c)
+                          (char-equal c char))
+                        string)))
+    (list (subseq string 0 p)
+          (subseq string p))))
+
+;; (split-at "#01r23" #\r)
+;; => ("#01" "r23")
+
+(defun test-read-sharpsign-r (input &key end)
+  (check-type input string)
+  (let* (;; assumes input is a string
+         (input (split-at input #\r))
+         ;; assumes input starts with #
+         (numeric-argument (let ((prefix (first input)))
+                             (when (< 2 (length prefix))
+                               (parse-integer prefix :start 1)))))
+    (test-read-sharpsign*
+     :sharpsing-reader-function 'read-sharpsign-r
+     :node-type 'sharp-radix
+     :input input
+     :expected-end end
+     ;; :expected-children child
+     :given-numeric-argument numeric-argument)))
+
+ (parse-integer
+  "#" :start 1 :junk-allowed t)
+
+;; (trace read-sharpsign-r)
+
+(define-test+run read-sharpsign-r
+  ;; no radix
+  (progn
+    (test-read-sharpsign-r "#r" :end +end+)
+    (test-read-sharpsign-r "#R" :end +end+)
+    (test-read-sharpsign-r "#rr" :end +end+)
+    (test-read-sharpsign-r "#Rr" :end +end+)
+    (test-read-sharpsign-r "#r1" :end +end+)
+    (test-read-sharpsign-r "#R1" :end +end+)
+    (test-read-sharpsign-r "#r666" :end +end+)
+    (test-read-sharpsign-r "#rF" :end +end+)
+    (test-read-sharpsign-r "#rf" :end +end+)
+    (test-read-sharpsign-r "#rz" :end +end+))
+  ;; bad radix
+  (progn
+    (test-read-sharpsign-r "#1r0" :end +end+)
+    (test-read-sharpsign-r "#37R0" :end +end+))
+  ;; good radix
+  (progn
+    (test-read-sharpsign-r "#2r" :end +end+)
+    (test-read-sharpsign-r "#2R" :end +end+)
+    (test-read-sharpsign-r "#2rr" :end +end+)
+    (test-read-sharpsign-r "#2Rr" :end +end+)
+    ;; TODO WIP those tests don't passes just yet
+    #++
+    (test-read-sharpsign-r "#2r1")
+    #++
+    (test-read-sharpsign-r "#2R1")
+    #|
+    (test-read-sharpsign-r "#2r666" :end +end+)
+    (test-read-sharpsign-r "#rF")
+    (test-read-sharpsign-r "#rf")
+    (test-read-sharpsign-r "#rz" :end +end+)
+    |#))
+
+
+;;; #c sharp-complex
 
 (defun test-read-sharpsign-c (input &key child end)
   (test-read-sharpsign*
@@ -454,20 +679,20 @@ newline or +end+)
   (test-read-sharpsign-c "#C1" :end +end+)
   ;; N.B. #c(1) is actually invalid
   (test-read-sharpsign-c "#c(1)"
-                         :child (node 'parens 2 5 (list (node 'token 3 4))))
+                         :child (parens 2 5 (node 'token 3 4)))
   (test-read-sharpsign-c "#C(1)"
-                         :child (node 'parens 2 5 (list (node 'token 3 4))))
+                         :child (parens 2 5 (node 'token 3 4)))
   (test-read-sharpsign-c "#c(1 2) a"
-                         :child (node 'parens 2 7
-                                      (list (node 'token 3 4)
-                                            (node 'whitespace 4 5)
-                                            (node 'token 5 6)))
+                         :child (parens 2 7
+                                        (nodes (node 'token 3 4)
+                                               (node 'whitespace 4 5)
+                                               (node 'token 5 6)))
                          :end 7)
   (test-read-sharpsign-c "#C(1 2) a"
                          :child (node 'parens 2 7
-                                      (list (node 'token 3 4)
-                                            (node 'whitespace 4 5)
-                                            (node 'token 5 6)))
+                                      (nodes (node 'token 3 4)
+                                             (node 'whitespace 4 5)
+                                             (node 'token 5 6)))
                          :end 7))
 
 
@@ -493,9 +718,9 @@ newline or +end+)
   (test-read-sharpsign-a '("#2" "a()") :child (parens 3 5))
   (test-read-sharpsign-a '("#2" "a(1 2)")
                          :child (parens 3 8
-                                        (list (token 4 5)
-                                              (whitespace 5 6)
-                                              (token 6 7))))
+                                        (nodes (token 4 5)
+                                               (whitespace 5 6)
+                                               (token 6 7))))
   (test-read-sharpsign-a '("#2" "A()") :child (parens 3 5)))
 
 
@@ -513,9 +738,9 @@ newline or +end+)
   (test-read-sharpsign-s "#s" :end +end+)
   (test-read-sharpsign-s "#S" :end +end+)
   (test-read-sharpsign-s "#S(node)"
-                         :child (list (parens 2 8 (list (token 3 7)))))
+                         :child (nodes (parens 2 8 (token 3 7))))
   (test-read-sharpsign-s "#S(node) foo"
-                         :child (list (parens 2 8 (list (token 3 7))))
+                         :child (nodes (parens 2 8 (token 3 7)))
                          :end 8))
 
 
@@ -533,10 +758,10 @@ newline or +end+)
   (test-read-sharpsign-p "#p" :end +end+)
   (test-read-sharpsign-p "#P" :end +end+)
   (test-read-sharpsign-p "#p\"/root/\""
-                         :child (list (node 'string 2 10))
+                         :child (nodes (node 'string 2 10))
                          :end 10)
   (test-read-sharpsign-p "#p\"/root/\"  foo"
-                         :child (list (node 'string 2 10))
+                         :child (nodes (node 'string 2 10))
                          :end 10))
 
 
@@ -549,23 +774,21 @@ newline or +end+)
    :input input
    :expected-end end
    :expected-children child
-   :given-numeric-argument (getf child :label)))
+   :given-numeric-argument (first-node child)))
 
 (define-test+run read-sharpsign-equal
   (test-read-sharpsign-equal "#=" :end +end+)
   (test-read-sharpsign-equal
    '("#1" "=")
-   :child (list :label 1)
+   :child (nodes 1)
    :end +end+)
   (test-read-sharpsign-equal
    '("#2" "= ")
-   :child (list :label 2
-                :form (list (whitespace 3 4)))
+   :child (nodes 2 (whitespace 3 4))
    :end +end+)
   (test-read-sharpsign-equal
    '("#3" "=(foo)")
-   :child (list :label 3
-                :form (list (parens 3 8 (token 4 7))))))
+   :child (nodes 3 (parens 3 8 (token 4 7)))))
 
 
 
@@ -598,13 +821,13 @@ newline or +end+)
 
 (define-test+run read-sharpsign-plus
   (test-read-sharpsign-plus "#+" :end +end+)
-  (test-read-sharpsign-plus "#++" :child (list (token 2 3)))
+  (test-read-sharpsign-plus "#++" :child (nodes (token 2 3)))
   (test-read-sharpsign-plus
    "#+ #+ x"
-   :child (list (whitespace 2 3)
-                (sharp-feature 3 7
-                               (list (whitespace 5 6)
-                                     (token 6 7))))))
+   :child (nodes (whitespace 2 3)
+                 (sharp-feature 3 7
+                                (nodes (whitespace 5 6)
+                                       (token 6 7))))))
 
 
 ;;; #-
@@ -619,13 +842,13 @@ newline or +end+)
 
 (define-test+run read-sharpsign-minus
   (test-read-sharpsign-minus "#-" :end +end+)
-  (test-read-sharpsign-minus "#--" :child (list (token 2 3)))
+  (test-read-sharpsign-minus "#--" :child (nodes (token 2 3)))
   (test-read-sharpsign-minus
    "#- #- x"
-   :child (list (whitespace 2 3)
-                (sharp-feature-not 3 7
-                                   (list (whitespace 5 6)
-                                         (token 6 7))))))
+   :child (nodes (whitespace 2 3)
+                 (sharp-feature-not 3 7
+                                    (nodes (whitespace 5 6)
+                                           (token 6 7))))))
 
 
 
@@ -688,15 +911,15 @@ newline or +end+)
   (with-state ("")
     (test* (read-quoted-string state #\| #\/) nil))
   (with-state ("|")
-    (test* (read-quoted-string state #\| #\/) (list 0  +end+)))
+    (test* (read-quoted-string state #\| #\/) (range 0 +end+)))
   (with-state ("||")
-    (test* (read-quoted-string state #\| #\/) '(0 2)))
+    (test* (read-quoted-string state #\| #\/) (range 0 2)))
   (with-state ("| |")
-    (test* (read-quoted-string state #\| #\/) '(0 3)))
+    (test* (read-quoted-string state #\| #\/) (range 0 3)))
   (with-state ("|/||")
-    (test* (read-quoted-string state #\| #\/) '(0 4)))
+    (test* (read-quoted-string state #\| #\/) (range 0 4)))
   (with-state ("|/|")
-    (test* (read-quoted-string state #\| #\/) (list 0 +end+))))
+    (test* (read-quoted-string state #\| #\/) (range 0 +end+))))
 
 (defun test-read-string (input expected-end)
   (with-state (input)
@@ -737,12 +960,12 @@ newline or +end+)
     (is equalp (node 'uninterned-symbol 2 3) (tsn "#:x"))
     (is equalp
         (node 'qualified-symbol 0 3
-              (list (node 'package-name 0 1)
-                    (node 'symbol-name 2 3)))
+              (nodes (node 'package-name 0 1)
+                     (node 'symbol-name 2 3)))
         (tsn "p:x"))
     (is equalp
         (node 'possibly-internal-symbol 0 4
-              (list
+              (nodes
                (node 'package-name 0 1)
                (node 'symbol-name 3 4)))
         (tsn "p::x"))
@@ -758,12 +981,12 @@ newline or +end+)
     (is equalp (node 'keyword 4 5) (tsn-padded ":x"))
     (is equalp (node 'uninterned-symbol 5 6) (tsn-padded "#:x"))
     (is equalp (node 'qualified-symbol 3 6
-                     (list (node 'package-name 3 4)
-                           (node 'symbol-name 5 6)))
+                     (nodes (node 'package-name 3 4)
+                            (node 'symbol-name 5 6)))
         (tsn-padded "p:x"))
     (is equalp (node 'possibly-internal-symbol 3 7
-                     (list (node 'package-name 3 4)
-                           (node 'symbol-name 6 7)))
+                     (nodes (node 'package-name 3 4)
+                            (node 'symbol-name 6 7)))
         (tsn-padded "p::x"))
     (false (tsn-padded ""))
     (false (tsn-padded "#:"))
@@ -810,7 +1033,7 @@ newline or +end+)
   (with-state (input)
     (test* (read-parens state)
            (when expected-end
-             (parens 0 expected-end children)))))
+             (parens 0 expected-end (ensure-nodes children))))))
 
 (define-test+run read-parens
   :depends-on (read-char*)
@@ -835,7 +1058,7 @@ newline or +end+)
   (let* ((state (parse input))
          (tree (tree state)))
     (if expected
-        (is-equalp* input tree expected)
+        (is-equalp* input tree (ensure-nodes expected))
         (is-equalp* input tree))))
 
 (define-test+run "parse"
@@ -879,27 +1102,27 @@ newline or +end+)
                     (node 'parens 2 4)))
   (test-parse "#<>" (node 'sharp-unknown 0 +end+))
   (test-parse "#+ x" (node 'sharp-feature 0 4
-                           (list
+                           (nodes
                             (whitespace 2 3)
                             (token 3 4))))
   (test-parse "(char= #\\; c)"
               (parens 0 13
-                      (list (token 1 6)
-                            (whitespace 6 7)
-                            (sharp-char 7 10 (token 8 10))
-                            (whitespace 10 11)
-                            (token 11 12))))
+                      (nodes (token 1 6)
+                             (whitespace 6 7)
+                             (sharp-char 7 10 (token 8 10))
+                             (whitespace 10 11)
+                             (token 11 12))))
   (test-parse "(#\\;)" (parens 0 5
-                               (list (sharp-char 1 4 (token 2 4)))))
+                               (nodes (sharp-char 1 4 (token 2 4)))))
   (test-parse "#\\; " (sharp-char 0 3 (token 1 3)) (whitespace 3 4))
   (test-parse "`( asdf)" (node 'quasiquote 0 1)
               (parens 1 8
-                      (list
+                      (nodes
                        (whitespace 2 3)
                        (token 3 7))))
   (test-parse "#\\Linefeed" (sharp-char 0 10 (token 1 10)))
   (test-parse "#\\: asd" (sharp-char 0 3 (token 1 3)) (whitespace 3 4) (token 4 7))
-  (test-parse "(((  )))" (parens 0 8 (list (parens 1 7 (list (parens 2 6 (list (whitespace 3 5))))))))
+  (test-parse "(((  )))" (parens 0 8 (parens 1 7 (parens 2 6 (whitespace 3 5)))))
   (test-parse "(#" (parens 0 +end+ (sharp-unknown 1 +end+)))
   (test-parse "(#)" (parens 0 +end+ (sharp-unknown 1 +end+)))
   (test-parse "(#) "
@@ -910,23 +1133,26 @@ newline or +end+)
                0 +end+
                (sharp-function
                 1 +end+
-                (list (node ':extraneous-closing-parens 3 +end+)))))
+                (nodes (node ':extraneous-closing-parens 3 +end+)))))
   (test-parse "#1=#1#"
               (sharp-label 0 6
-                           (list :label 1 :form
-                                 (list (sharp-reference 3 6 1)))))
-  (test-parse "(;)" (parens 0 -1 (list (line-comment 1 3))))
+                           (nodes 1 (sharp-reference 3 6 1))))
+  (test-parse "(;)" (parens 0 -1 (line-comment 1 3)))
   ;; TODO This is wrong
-  (test-parse "#+;;" (sharp-feature 0 4 (list (line-comment 2 4))))
+  (test-parse "#+;;" (sharp-feature 0 4 (nodes (line-comment 2 4))))
   ;; TODO Is that what I want?
-  (test-parse "#++;;" (sharp-feature 0 3 (list (token 2 3))) (line-comment 3 5))
+  (test-parse "#++;;" (sharp-feature 0 3 (nodes (token 2 3))) (line-comment 3 5))
   ;; TODO This is wrong... but _OMG_
   (test-parse (format nil "cl-user::; wtf~%reaally?")
               (token 0 9) (line-comment 9 14) (whitespace 14 15) (token 15 23))
   ;; TODO This is silly
   (test-parse ",@" (node 'comma 0 1) (node 'at 1 2))
   ;; TODO This is silly
-  (test-parse ",." (node 'comma 0 1) (node 'dot 1 2)))
+  (test-parse ",." (node 'comma 0 1) (node 'dot 1 2))
+  (test-parse "(in-package #)" (parens 0 -1
+                                       (nodes (token 1 11)
+                                              (whitespace 11 12)
+                                              (sharp-unknown 12 -1)))))
 
 #++ ;; this is cursed
 (read-from-string "cl-user::; wtf
@@ -977,7 +1203,7 @@ reaally?")
   (loop :for file :in (breeze.asdf:system-files 'breeze)
         :for content = (alexandria:read-file-into-string file)
         :do (let* ((state (parse content))
-                   (last-node (alexandria:lastcar (tree state)))
+                   (last-node (last-node (tree state)))
                    (result (unparse state nil)))
               (walk state (lambda (node &rest args
                                    &key depth

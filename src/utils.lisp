@@ -4,21 +4,6 @@
   (:documentation "Utilities")
   (:import-from #:alexandria #:symbolicate)
   (:export
-   #:string-designator
-   #:around
-   #:optimal-string-alignment-distance
-   #:optimal-string-alignment-distance*
-   #:repeat-string
-   #:split-by-newline
-   #:indent-string
-   #:remove-indentation
-   #:print-comparison
-   #:summarize
-   #:+whitespaces+
-   #:trim-whitespace
-   #:whitespacep
-   #:symbol-package-qualified-name)
-  (:export
    #:walk
    #:walk-car
    #:walk-list
@@ -29,8 +14,7 @@
    #:length>1?
    #:with-collectors)
   (:export
-   #:stream-size
-   #:read-stream-range)
+   #:stream-size)
   (:export
    #:breeze-relative-pathname
    #:find-version-control-root
@@ -88,7 +72,7 @@
     x))
 
 ;; TODO I don't think I use this
-(defun walk (tree fn  &optional (recurse-p (constantly t)))
+(defun walk (tree fn &optional (recurse-p (constantly t)))
   "Walk a tree and call fn on every elements"
   (dolist (node tree)
     (if (listp node)
@@ -119,30 +103,6 @@
                      (search search-string (package-name package)
                              :test #'string-equal))
                  (list-all-packages)))
-
-
-;;; Stream stuff
-
-;; TODO This is horrible performance-wise, I should never use this
-(defun read-stream-range (stream start end)
-  "Read a subsequence from STREAM between START and END."
-  (let ((current-position (file-position stream)))
-    (unwind-protect
-         (let ((sequence (make-string (- end start))))
-           (file-position stream start)
-           (read-sequence sequence stream)
-           sequence)
-      (file-position stream current-position))))
-
-(defun stream-size (stream)
-  "Get the total size of STREAM."
-  (let ((current-position (file-position stream)))
-    (when current-position
-      (unwind-protect
-           (progn
-             (file-position stream :end) ;; TODO This might fail
-             (file-position stream))
-        (file-position stream current-position)))))
 
 
 ;;; Path stuff

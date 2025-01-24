@@ -1,6 +1,30 @@
 ;;;; String manipulation utilities
 
-(in-package #:breeze.utils)
+(defpackage #:breeze.string
+  (:documentation "String manipulation utilities")
+  (:use #:cl)
+  (:import-from #:breeze.utils
+                #:subseq-displaced)
+  (:export
+   #:string-designator
+   #:around
+   #:optimal-string-alignment-distance
+   #:optimal-string-alignment-distance*
+   #:repeat-string
+   #:split-by-newline
+   #:indent-string
+   #:remove-indentation
+   #:print-comparison
+   #:summarize
+   #:+whitespaces+
+   #:trim-whitespace
+   #:whitespacep
+   #:symbol-package-qualified-name
+   #:ensure-prefix
+   #:ensure-suffix
+   #:ensure-circumfix))
+
+(in-package #:breeze.string)
 
 (deftype string-designator () '(or string character symbol))
 
@@ -236,7 +260,7 @@ AROUND. Add elipseses before and after if necessary."
   (let* ((min-size (1+ (* 2 around)))
          (before (- position around))
          (start (max 0 before))
-         (after  (+ start min-size))
+         (after (+ start min-size))
          (end (min (length string) after))
          (start (max 0 (min start (- end min-size))))
          (ellipsis-left (max 0 (min 3 start)))
@@ -265,3 +289,34 @@ AROUND. Add elipseses before and after if necessary."
   (let ((*print-escape* t)
         (*package* (find-package "KEYWORD")))
     (prin1-to-string symbol)))
+
+
+(defun ensure-prefix (prefix string)
+  (if (alexandria:starts-with-subseq prefix string)
+      string
+      (concatenate 'string prefix string)))
+
+#++
+(and (equal
+      "*a"
+      (ensure-prefix "*" "a"))
+     (equal (ensure-prefix "*" "a")
+            (ensure-prefix "*" "*a")))
+
+(defun ensure-suffix (suffix string)
+  (if (alexandria:ends-with-subseq suffix string)
+      string
+      (concatenate 'string string suffix)))
+
+#++
+(and (equal
+      "a*"
+      (ensure-suffix "*" "a"))
+     (equal (ensure-suffix "*" "a")
+            (ensure-suffix "*" "a*")))
+
+(defun ensure-circumfix (circumfix string)
+  (ensure-suffix circumfix (ensure-prefix circumfix string)))
+
+#++
+(equal "*a*" (ensure-circumfix "*" "a"))

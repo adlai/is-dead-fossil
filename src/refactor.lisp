@@ -12,10 +12,16 @@
    #:symbolicate
    #:lastcar)
   (:import-from
+   #:breeze.string
+   #:ensure-circumfix)
+  (:import-from
    #:breeze.utils
    #:symbol-package-qualified-name
    #:before-last
    #:find-version-control-root)
+  (:import-from
+   #:breeze.indirection
+   #:indirect)
   (:export
    #:command-description
    ;; Simple transformation commands
@@ -40,9 +46,11 @@
    #:insert-defgeneric
    #:insert-defmethod
    #:insert-print-unreadable-object-boilerplate
+   #:insert-make-load-form-boilerplate
    #:insert-lambda
    ;; Other commands
-   #:quickfix))
+   #:quickfix
+   #| WIP |# #++ #:other-file))
 
 (in-package #:breeze.refactor)
 
@@ -62,6 +70,10 @@
     ~%  )"
      name
      (substitute #\Space #\- name))))
+
+#++ ;; snippet draft:
+`(define-command (:the symbol ?name) () \n
+   (fmt "\"~@(~a~).\"" ?name))
 
 (define-command insert-handler-case-form ()
   "Insert handler case form."
@@ -108,26 +120,28 @@
    "Enter the variable name for the value: "
    "~a)"))
 
-(defun insert-defvar-shaped (form-name)
+(defun insert-defvar-shaped (form-name &optional circumfix)
   "Start a command to insert a form that has the same shape as a
 defvar."
   (insert "(~a " form-name)
-  ;; TODO Check if name is surrounded by "*"
-  (read-string-then-insert "Name: " "*~a* ")
-  (read-string-then-insert "Initial value: " "~a~%")
+  (let ((name (read-string "Name: ")))
+    (insert (if circumfix
+                (ensure-circumfix circumfix name)
+                name)))
+  (read-string-then-insert "Initial value: " " ~a~%")
   (read-string-then-insert "Documentation string " "\"~a\")"))
 
 (define-command insert-defvar ()
   "Insert a defvar form."
-  (insert-defvar-shaped "defvar"))
+  (insert-defvar-shaped "defvar" "*"))
 
 (define-command insert-defparameter ()
   "Insert a defparameter form."
-  (insert-defvar-shaped "defparameter"))
+  (insert-defvar-shaped "defparameter" "*"))
 
 (define-command insert-defconstant ()
   "Insert a defconstant form."
-  (insert-defvar-shaped "defconstant"))
+  (insert-defvar-shaped "defconstant" "+"))
 
 ;; TODO Add "alexandria" when the symbol is not interned
 ;;      ^^^ that should go in "refactor.lisp"
@@ -165,7 +179,7 @@ defun."
   "Try to infer the name of the project from the PATH."
   ;; Infer project-name by location .git folder
   (when path
-    (if-let ((vc-root (find-version-control-root path)))
+    (if-let ((vc-root (indirect (find-version-control-root path))))
       (directory-name vc-root))))
 
 (defun infer-is-test-file (path)
@@ -301,6 +315,22 @@ defun."
      name
      type name)))
 
+(define-command insert-make-load-form-boilerplate ()
+  "Insert a make-load-form method form."
+  (let ((name (read-string
+               "Name of the object (parameter name of the method): "))
+        (type (read-string
+               "Type of the object: "))
+        (slots (read-string
+                "Slots of the object: ")))
+    (insert
+     "(defmethod make-load-form ((~A ~A) &optional environment)~
+          ~%  (make-load-form-saving-slots ~A~
+          ~%                              :slot-names '(~{~A~^ ~})~
+          ~%                              :environment environment))"
+     name type
+     name
+     (list slots))))
 
 (define-command insert-lambda ()
   "Insert a lambda form."
@@ -371,14 +401,6 @@ defun."
     insert-handler-case-form
     insert-lambda))
 
-(defun all-commands ()
-  (remove-duplicates
-   (append
-    *commands-applicable-at-toplevel*
-    *commands-applicable-in-a-loop-form*
-    *commands-applicable-inside-another-form-or-at-toplevel*)))
-
-
 (defun validate-nearest-in-package (nodes outer-node)
   "Find the lastest \"in-package\" form, test if the packages can be
 found."
@@ -417,12 +439,14 @@ For debugging purposes ONLY.")
 (defun sanitize-list-of-commands (commands)
   ;; Some methods returns lists, some just a symbol.
   ;; We flatten that to just a list of symbols.
-  (setf commands (alexandria:flatten
-                  (copy-seq (alexandria:ensure-list commands))))
+  (setf commands
+        (alexandria:flatten
+         (copy-seq
+          (alexandria:ensure-list commands))))
 
   ;; Fallback to suggesting _all_ commands.
   (unless commands
-    (setf commands (copy-seq (all-commands))))
+    (setf commands (copy-seq (list-all-commands))))
 
   ;; Deduplicate commands
   (setf commands (remove-duplicates commands))
@@ -534,7 +558,7 @@ commands that the user might want to run."
     (if (and parent-node
              (not (listp parent-node)))
         (destructuring-bind (from . to)
-            (node-source parent-node)
+            (node-source parent-node) ;; TODO undefined function:
           (replace-region from to ""))
         (message "No parent node at point."))))
 
@@ -597,3 +621,25 @@ a message and stop the current command."
 
 #+nil
 (quickfix :buffer-string "   " :point 3)
+
+
+
+#++ ;; TODO
+(define-command move-to-tests ())
+
+(define-command other-file ()
+  "Find the alternative file for the current file."
+  (message (buffer-file-name)))
+
+;; 1. generate dirs from "vc-root" '("src" "t" "test" "tests")
+;; 2. find in which directory is the current file
+;; 3. find which alternative directory exists
+;; 4. find which alternative file exists
+
+;; On second thought, the "find test directory"/"find test files" should be part of the "workspace".
+
+#++
+(if-let (buffer-file-name))
+#++
+(if-let ((vc-root (indirect (find-version-control-root path))))
+  (directory-name vc-root))

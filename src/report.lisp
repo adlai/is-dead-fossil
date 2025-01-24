@@ -10,6 +10,11 @@ than html.
 
 TODO Nice to haves: line numbers
 
+TODO Render file-comment ";;;;" differently
+TODO Render comments differently based on the number of ";"
+
+TODO Split comment/paragraphs when the line starts with "TODO"
+
 |#
 
 
@@ -82,7 +87,7 @@ newlines or more marks the start of a new paragraph)."
   (loop
     :with pages = nil
     :with page = nil
-    :for node :in
+    :for node :across
               (tree state)
     :when (and page (page-node-p node))
       :do (push (nreverse page) pages)

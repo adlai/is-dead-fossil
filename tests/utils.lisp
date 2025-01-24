@@ -44,49 +44,7 @@
              (collect node))))))
 
 (define-test package-apropos)
-(define-test optimal-string-alignment-distance)
-(define-test indent-string)
-(define-test print-comparison)
 
-
-(define-test+run around
-  ;; Not the best test, but it'll do.
-  (is equalp
-      '("abcdefg..."
-        "abcdefg..."
-        "abcdefg..."
-        "abcdefg..."
-        ".bcdefgh..."
-        "..cdefghi..."
-        "...defghij..."
-        "...efghijk.."
-        "...fghijkl."
-        "...ghijklm"
-        "...ghijklm"
-        "...ghijklm"
-        "...ghijklm"
-        "...ghijklm")
-      (loop :with string = "abcdefghijklm"
-            :for i :upto (length string)
-            :collect (around string i 3)))  )
-
-
-
-(define-test read-stream-range
-  (is equal
-      (multiple-value-list
-       (with-input-from-string
-           (stream "(1 #|comment|# \"string\")")
-         (values
-          (read-stream-range stream 3 (+ 3 11))
-          (file-position stream))))
-      '("#|comment|#" 0)))
-
-(define-test stream-size
-  (is = 24
-      (with-input-from-string
-          (stream "(1 #|comment|# \"string\")")
-        (stream-size stream))))
 
 (define-test before-last
   (false (before-last '()))
@@ -105,12 +63,6 @@
 #+nil
 (minimizing (x :tracep t)
   (x 'a 10))
-
-#+ (or)
-(optimal-string-alignment-distance*
- "breeze.util"
- "breeze.utils"
- 3)
 
 (define-test length>1?
   (false (length>1? nil))
