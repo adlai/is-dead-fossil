@@ -23,3 +23,12 @@ rg -i todo
 #+end_src
 
 Explore the documentation.
+
+* Cauterising GitHub
+** really? yeah, it's not fun anymore.
+
+Start by creating an Org, and forking this repo [ rename ;?
+then most importantly, goto Settings/ "Template Repository"
+
+The goal is reducing bothersome notifications because, I am
+obnoxious, clueless, and hated by my clients' DevOps jockey
